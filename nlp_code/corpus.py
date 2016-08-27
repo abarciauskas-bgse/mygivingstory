@@ -6,6 +6,7 @@ from nltk.tokenize import wordpunct_tokenize
 from nltk import PorterStemmer
 from collections import Counter
 from collections import defaultdict
+import math
 
 class Corpus():
     
@@ -96,7 +97,42 @@ class Corpus():
                 document_term_matrix.itemset(doc_term_tuple, count)
         # update the doc_term_matrix attribute        
         self.document_term_matrix = document_term_matrix        
-            
+
+    def generate_idfv(self):
+        """
+        computes the inverse document frequency of each term v
+        """
+        D = self.N
+        # idf_{v} = log(D/d_fv)
+        terms_list = list(self.token_set)
+        self.idfv = dict.fromkeys(terms_list, 0)
+        # creates a hash {'term':0,'term2':0,...}
+        for v in self.token_set:
+            term_idx = terms_list.index(v)
+            d_fv = np.sum(self.document_term_matrix[:,term_idx] > 0)
+            # apply the formula
+            c = math.log10(D/d_fv)
+            self.idfv[v] = c
+        
+    def generate_tf_idf(self):
+        D = self.N
+        terms_list = list(self.token_set)
+        # initialize the matrix
+        tf_idf = np.zeros(self.document_term_matrix.shape)
+        for doc_i in range(D):
+            if doc_i%25==0: print 'counting terms for doc: ' + str(doc_i)
+            for v_i in range(len(terms_list)):
+                doc_term_tuple = (doc_i, v_i)
+                xdv_score = self.document_term_matrix.item(doc_term_tuple)
+                if xdv_score > 0:
+                    idf_score = self.idfv[terms_list[v_i]]
+                    if idf_score > 0:
+                        # apply the formula seen in class
+                        tf_idf_score = (1 + np.log(xdv_score))*idf_score
+                        tf_idf.itemset(doc_term_tuple, tf_idf_score)
+        self.tf_idf = tf_idf
+        
+        
     def lda_gibbs(self, K = 3, iters = 10, progress_interval = 1, print_time = False, print_progress = True, print_sanity = False):
         # Initializations
         D = len(corpus.docs)
