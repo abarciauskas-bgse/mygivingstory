@@ -101,14 +101,17 @@ gr_data$give_reason2 <- factor(gr_data$give_reason2)
 
 ## Frequency plot 
 A quick check of frequency of give reason.
+Filtered for the 3 main give reasons.
 ```{r gr freq plot}
 gr_data %>%
+  filter(give_reason_vlook %in% c("1", "2", "3")) %>%
   group_by(give_reason2) %>%
   summarise(freq = n()) %>%
   ggplot(aes(give_reason2, freq)) +
     geom_bar(stat = "Identity")
 
 gr_data %>%
+  filter(give_reason_vlook %in% c("1", "2", "3")) %>%
   group_by(give_reason2) %>%
   summarise(avg_local_count = mean(votes_local_network, na.rm = T)) %>%
   ggplot(aes(give_reason2, avg_local_count)) +
