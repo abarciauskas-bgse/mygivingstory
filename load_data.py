@@ -2,7 +2,7 @@ from openpyxl import load_workbook
 import numpy as np
 
 from openpyxl import load_workbook
-wb = load_workbook(filename='data/CleanDataKeyEntry.xlsx', read_only=True)
+wb = load_workbook(filename='data/CleanDataKeyEntry.xlsx', read_only=True, data_only=True)
 
 ws = wb.get_sheet_by_name('MainData')
 A = np.array([[i.value for i in j] for j in ws.rows])
