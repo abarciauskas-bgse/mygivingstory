@@ -1,0 +1,579 @@
+---
+title: "R Notebook"
+output:
+  html_notebook: default
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+# Intro
+
+Starting to dive into the data!
+
+# Setup
+
+## Load Packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tm)
+library(stringr)
+library(jsonlite)
+library(googlesheets)
+library(randomForest)
+```
+
+
+## Load data
+```{r import clean csv, cache = T, results = "hide"}
+raw_data <- read.csv("./data/CLEAN-DATA.csv", stringsAsFactors = F)
+CleanDataKeyEntry <- gs_title("CleanDataKeyEntry")
+main_data <- gs_read(CleanDataKeyEntry, ws = "MainData")
+```
+
+# NTEE Cleaning
+In a quick peek of the data, we see the NTEE code column has `r round(sum(raw_data$NTEE_Code=="")/nrow(raw_data)*100,2)` percent missing. Multiple codes are allowed, so we will set out on imputing some missing values.
+
+## Parsing JSON NTEE codes to data frame
+In order to join the NTEE code list to the data, we need to parse the JSON file to a data frame. And bonus: add it to the Google sheet! Note that not all codes have keywords assocaited with them. Keywords are separated with "|". 
+```{r NTEE json to df, cache = T}
+ntee <- fromJSON("./data/ntee.json", simplifyDataFrame = T, flatten = T)
+ntee_df <- data.frame(code = c(),
+                    title = c(),
+                    desc = c(),
+                    keywords = c()
+                    )
+for (i in 1:length(ntee)) {
+  code_add      <- names(ntee)[i]
+  code_data     <- ntee[[i]]
+  code_desc     <- code_data$description
+  code_keywords <- paste(code_data$keywords, collapse = "|")
+  code_title    <- code_data$title
+  
+  data_add <- data.frame(code     = code_add,
+                         title    = code_title,
+                         desc     = code_desc,
+                         keywords = code_keywords
+                         )
+  ntee_df <- rbind(ntee_df, data_add)
+}
+
+# CleanDataKeyEntry <- CleanDataKeyEntry %>%
+#   gs_ws_new(ws_title = "NTEE Codes", input = ntee_df)
+```
+
+## Create table of NPO name and and codes
+The aid with the cleaning, we'll reduce the raw data to a table of NPO names and associated codes.
+
+*work paused on this*
+
+
+# NTEE Top Level Feature Creation
+Here we parse the assigned NTEE codes and extract the top level (i.e. A, B, C) code and one-hot encode the results. 
+
+# Give Reason Analysis
+Let's see if we can do a basic model of giving reason.
+Giving reasons: 1 = Personal, 2 = Invested, 3 = Exposure, 4 =  ??, NA
+
+## Data Cleaing and Subsetting
+Since not all NPOs matched well to the Guidestar data, we'll follow the convention of filtering out observations that were not good matches using *Inclusion == TRUE*
+
+```{r gr data prep, cache = T}
+gr_data <- main_data %>%
+  filter(Inclusion == TRUE)
+
+# Recode give reason
+## Recoding gr_data$give_reason into gr_data$give_reason2
+## Recoding gr_data$give_reason_vlook into gr_data$give_reason2
+gr_data$give_reason2 <- gr_data$give_reason_vlook
+gr_data$give_reason2[gr_data$give_reason_vlook == "1"] <- "Personal"
+gr_data$give_reason2[gr_data$give_reason_vlook == "2"] <- "Invested"
+gr_data$give_reason2[gr_data$give_reason_vlook == "3"] <- "Exposure"
+gr_data$give_reason2[gr_data$give_reason_vlook == "#N/A"] <- "Not Found"
+gr_data$give_reason2[gr_data$give_reason_vlook == "??"] <- "Not Found"
+gr_data$give_reason2[gr_data$give_reason_vlook == "4"] <- "Other"
+gr_data$give_reason2[is.na(gr_data$give_reason_vlook)] <- "Not Found"
+gr_data$give_reason2 <- factor(gr_data$give_reason2)
+
+
+```
+
+## Frequency plot 
+A quick check of frequency of give reason.
+```{r gr freq plot}
+gr_data %>%
+  group_by(give_reason2) %>%
+  summarise(freq = n()) %>%
+  ggplot(aes(give_reason2, freq)) +
+    geom_bar(stat = "Identity")
+
+gr_data %>%
+  group_by(give_reason2) %>%
+  summarise(avg_local_count = mean(votes_local_network, na.rm = T)) %>%
+  ggplot(aes(give_reason2, avg_local_count)) +
+  geom_bar(stat = "Identity") +
+  ggtitle("Average Local Network Votes by Give Reason")
+```
+## Give Reason Freq by Photo
+Plot of give reason frequncy by if Photo was included or not.
+```{r gr photo freq}
+gr_data %>%
+  group_by(give_reason2, Photo) %>%
+    summarise(freq = n()) %>%
+  ggplot(aes(give_reason2, freq)) +
+    geom_bar(stat = "Identity") +
+  facet_wrap(~ Photo)
+```
+
+## Give Reason Freq by top level email domain
+```{r gr tl domain freq}
+gr_data %>%
+  group_by(give_reason2, EmailTLD) %>%
+    summarise(freq = n()) %>%
+  ggplot(aes(give_reason2, freq)) +
+    geom_bar(stat = "Identity") +
+  facet_wrap(~ EmailTLD) +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+```
+A bit sparse for somedomains, so let's recode as *com = 1/0* where 1 = "was .com" and 0 = "not .com".
+```{r emailLTD recode}
+## Recoding gr_data$EmailTLD into gr_data$com
+gr_data$com <- gr_data$EmailTLD
+gr_data$com[gr_data$EmailTLD == "com"] <- "1"
+gr_data$com[gr_data$EmailTLD == "net"] <- "0"
+gr_data$com[gr_data$EmailTLD == "in"] <- "0"
+gr_data$com[gr_data$EmailTLD == "edu"] <- "0"
+gr_data$com[gr_data$EmailTLD == "org"] <- "0"
+gr_data$com[gr_data$EmailTLD == "gov"] <- "0"
+gr_data$com[gr_data$EmailTLD == "de"] <- "0"
+gr_data$com[gr_data$EmailTLD == "us"] <- "0"
+gr_data$com[gr_data$EmailTLD == "nl"] <- "0"
+gr_data$com <- as.numeric(gr_data$com)
+
+gr_data %>%
+  group_by(give_reason2, com) %>%
+    summarise(freq = n()) %>%
+  ggplot(aes(give_reason2, freq)) +
+    geom_bar(stat = "Identity") +
+  facet_wrap(~ com) +
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5))
+```
+
+## Give Reason freq by high level NTEE
+```{r gr ntee freq}
+# gr_data <- gr_data %>%
+#   mutate()
+
+
+```
+
+
+
+
+##  Multinomal Model of Give Reason
+A basic multinomial model if give reason were we consider give reason == NA as a valid choice (i.e. choice not to disclose either purposefully or not)
+
+```{r gr multinom, cache= T}
+library(nnet)
+
+gr_model_1 <- gr_data %>% 
+ multinom(give_reason2 ~ Photo + give_method + com, data = .)
+
+summary(gr_model_1)
+```
+
+
+
+# Vote Count Prediction
+Let's see if we can build a predictive model for vote count. What factors are predictive of story vote count. Since we expect there to be a bit of a network effect with people that have a large number of friends getting large local vote counts, we will use gallery_count/local_count as the response variable. To start, we'll simply focus on getting a feature impotance list.
+
+## Feature Extraction and Model Building
+Let's extract some key features.
+```{r gallery vote ratio model}
+# Extract columns to keep
+set.seed(101)
+keep_cols <- c("votes_gallery_(Calc)"
+               ,"votes_local_network"
+               ,"InferredGender"
+               ,"TextLength"
+               ,"NumWords"
+               ,"NumPunctuation"
+               ,"NumURLs"
+               ,"NumHashtags"
+               ,"NumAtMentions"
+               ,"NumDollarsigns"
+               ,"NumDigits"
+               ,"NumExclamationpoints"
+               ,"NumUppercaseletters"
+               ,"EmailTLD"
+               ,"ScrabbleScore"
+               ,"Total Revenue"
+               ,"Photo"
+               ,"give_reason2"
+               #,"give_method_vlookup"
+               ,"give_method"
+               ,"SentimentScore"
+               ,"EmailDomain"
+               )
+
+vm_data <- gr_data %>%
+  select(one_of(keep_cols))
+
+# Target
+vm_data$target <- round(vm_data$`votes_gallery_(Calc)`/vm_data$votes_local_network,2)
+
+# Some Cleaning
+
+vm_data$total_revenue <- as.numeric(gsub("\\,", '', sub('\\$','',as.character(vm_data$`Total Revenue`))))
+
+vm_data$sentiment_clean <- round(as.numeric(vm_data$SentimentScore),5)
+
+vm_data$InferredGender <- as.factor(vm_data$InferredGender)
+vm_data$EmailTLD <- as.factor(vm_data$EmailTLD)
+vm_data$Photo <- as.factor(vm_data$Photo)
+vm_data$EmailDomain <- as.factor(vm_data$EmailDomain)
+#vm_data$give_method_vlookup <- as.factor(vm_data$give_method_vlookup)
+vm_data$give_method <- as.factor(vm_data$give_method)
+# Drop old features
+
+drop_cols <- c("SentimentScore"
+               ,"Total Revenue"
+               ,"votes_gallery_(Calc)"
+               ,"votes_local_network")
+
+vm_data <- vm_data %>% select(-one_of(drop_cols))
+
+# Remove NA's in respose
+vm_data <- vm_data %>% filter(!is.na(target))
+
+vm_data2 <- na.roughfix(vm_data)
+
+# Basic GBM for importance
+
+vm_gbm <- gbm(log(target+1) ~.
+              ,data = vm_data2
+              ,distribution = "gaussian"
+              ,n.trees = 1000
+              ,interaction.depth = 5
+              ,n.minobsinnode = 15
+              ,shrinkage = 0.005
+              ,bag.fraction = 0.5
+              ,train.fraction = 0.7
+              ,verbose = TRUE)
+
+summary(vm_gbm)
+
+gbm.perf(vm_gbm)
+
+
+```
+
+
+```{r email domain freq}
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, freq)) + 
+  geom_bar(stat="identity")
+
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(avg_target = mean(target)
+            ,freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, avg_target)) + 
+  geom_bar(stat="identity")
+
+```
+
+
+
+## Modelinh gallery count directly
+Let's extract some key features.
+```{r gallery vote count model}
+set.seed(101)
+# Extract columns to keep
+keep_cols <- c("votes_gallery_(Calc)"
+               ,"InferredGender"
+               ,"TextLength"
+               ,"NumWords"
+               ,"NumPunctuation"
+               ,"NumURLs"
+               ,"NumHashtags"
+               ,"NumAtMentions"
+               ,"NumDollarsigns"
+               ,"NumDigits"
+               ,"NumExclamationpoints"
+               ,"NumUppercaseletters"
+               ,"EmailTLD"
+               ,"ScrabbleScore"
+               ,"Total Revenue"
+               ,"Photo"
+               ,"give_reason2"
+               #,"give_method_vlookup"
+               ,"give_method"
+               ,"SentimentScore"
+               ,"EmailDomain"
+               )
+
+vm_data <- gr_data %>%
+  select(one_of(keep_cols))
+
+# Target
+vm_data$target <- vm_data$'votes_gallery_(Calc)'
+
+# Some Cleaning
+# Use total revenue on log scale due to some biiiig values
+vm_data$total_revenue <- log(as.numeric(gsub("\\,", '', sub('\\$','',as.character(vm_data$`Total Revenue`)))))
+
+vm_data$sentiment_clean <- round(as.numeric(vm_data$SentimentScore),5)
+
+vm_data$InferredGender <- as.factor(vm_data$InferredGender)
+vm_data$EmailTLD <- as.factor(vm_data$EmailTLD)
+vm_data$Photo <- as.factor(vm_data$Photo)
+vm_data$EmailDomain <- as.factor(vm_data$EmailDomain)
+#vm_data$give_method_vlookup <- as.factor(vm_data$give_method_vlookup)
+vm_data$give_method <- as.factor(vm_data$give_method)
+
+# Drop old features
+
+drop_cols <- c("SentimentScore"
+               ,"Total Revenue"
+               ,"votes_gallery_(Calc)"
+               ,"votes_local_network")
+
+vm_data <- vm_data %>% select(-one_of(drop_cols))
+
+# Remove NA's in respose
+vm_data <- vm_data %>% filter(!is.na(target))
+
+vm_data2 <- na.roughfix(vm_data)
+
+# Basic GBM for importance
+
+vm_gbm2 <- gbm(target ~.
+              ,data = vm_data2
+              ,distribution = "poisson"
+              ,n.trees = 1000
+              ,interaction.depth = 5
+              ,n.minobsinnode = 15
+              ,shrinkage = 0.001
+              ,bag.fraction = 0.6
+              ,train.fraction = 0.5
+              ,verbose = TRUE)
+
+summary(vm_gbm2)
+
+gbm.perf(vm_gbm2)
+
+
+```
+
+
+```{r email domain freq2}
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, freq)) + 
+  geom_bar(stat="identity")
+
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(avg_target = mean(target)
+            ,freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, avg_target)) + 
+  geom_bar(stat="identity")
+
+```
+
+Interestingly the GBM picks up on email domain which exhibits an interesting pattern with gallery vote count.
+
+## Modeling network votes directly
+```{r total vote count model}
+set.seed(101)
+# Extract columns to keep
+keep_cols <- c("votes_local_network"
+               ,"InferredGender"
+               ,"TextLength"
+               ,"NumWords"
+               ,"NumPunctuation"
+               ,"NumURLs"
+               ,"NumHashtags"
+               ,"NumAtMentions"
+               ,"NumDollarsigns"
+               ,"NumDigits"
+               ,"NumExclamationpoints"
+               ,"NumUppercaseletters"
+               ,"EmailTLD"
+               ,"ScrabbleScore"
+               ,"Total Revenue"
+               ,"Photo"
+               ,"give_reason2"
+               #,"give_method_vlookup"
+               ,"give_method"
+               ,"SentimentScore"
+               ,"EmailDomain"
+               )
+
+vm_data <- gr_data %>%
+  select(one_of(keep_cols))
+
+# Target
+vm_data$target <- vm_data$votes_local_network
+
+# Some Cleaning
+# Use total revenue on log scale due to some biiiig values
+vm_data$total_revenue <- log(as.numeric(gsub("\\,", '', sub('\\$','',as.character(vm_data$`Total Revenue`)))))
+
+vm_data$sentiment_clean <- round(as.numeric(vm_data$SentimentScore),5)
+
+vm_data$InferredGender <- as.factor(vm_data$InferredGender)
+vm_data$EmailTLD <- as.factor(vm_data$EmailTLD)
+vm_data$Photo <- as.factor(vm_data$Photo)
+vm_data$EmailDomain <- as.factor(vm_data$EmailDomain)
+#vm_data$give_method_vlookup <- as.factor(vm_data$give_method_vlookup)
+vm_data$give_method <- as.factor(vm_data$give_method)
+
+# Drop old features
+
+drop_cols <- c("SentimentScore"
+               ,"Total Revenue"
+               ,"votes_local_network")
+
+vm_data <- vm_data %>% select(-one_of(drop_cols))
+
+# Remove NA's in respose
+vm_data <- vm_data %>% filter(!is.na(target))
+
+vm_data2 <- na.roughfix(vm_data)
+
+# Basic GBM for importance
+
+vm_gbm2 <- gbm(target ~.
+              ,data = vm_data2
+              ,distribution = "poisson"
+              ,n.trees = 1000
+              ,interaction.depth = 5
+              ,n.minobsinnode = 15
+              ,shrinkage = 0.001
+              ,bag.fraction = 0.6
+              ,train.fraction = 0.5
+              ,verbose = TRUE)
+
+summary(vm_gbm2)
+
+gbm.perf(vm_gbm2)
+
+
+```
+
+```{r email domain freq3}
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, freq)) + 
+  geom_bar(stat="identity")
+
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(avg_target = mean(target)
+            ,freq = n()) %>%
+  filter(freq >= 5) %>%
+  ggplot(aes(EmailDomain, avg_target)) + 
+  geom_bar(stat="identity")
+
+```
+
+## Modeling Total votes directly
+```{r local network vote count model}
+set.seed(101)
+# Extract columns to keep
+keep_cols <- c("votes_total"
+               ,"InferredGender"
+               ,"TextLength"
+               ,"NumWords"
+               ,"NumPunctuation"
+               ,"NumURLs"
+               ,"NumHashtags"
+               ,"NumAtMentions"
+               ,"NumDollarsigns"
+               ,"NumDigits"
+               ,"NumExclamationpoints"
+               ,"NumUppercaseletters"
+               ,"EmailTLD"
+               ,"ScrabbleScore"
+               ,"Total Revenue"
+               ,"Photo"
+               ,"give_reason2"
+               #,"give_method_vlookup"
+               ,"give_method"
+               ,"SentimentScore"
+               ,"EmailDomain"
+               )
+
+vm_data <- gr_data %>%
+  select(one_of(keep_cols))
+
+# Target
+vm_data$target <- vm_data$votes_total
+
+# Some Cleaning
+# Use total revenue on log scale due to some biiiig values
+vm_data$total_revenue <- log(as.numeric(gsub("\\,", '', sub('\\$','',as.character(vm_data$`Total Revenue`)))))
+
+vm_data$sentiment_clean <- round(as.numeric(vm_data$SentimentScore),5)
+
+vm_data$InferredGender <- as.factor(vm_data$InferredGender)
+vm_data$EmailTLD <- as.factor(vm_data$EmailTLD)
+vm_data$Photo <- as.factor(vm_data$Photo)
+vm_data$EmailDomain <- as.factor(vm_data$EmailDomain)
+#vm_data$give_method_vlookup <- as.factor(vm_data$give_method_vlookup)
+vm_data$give_method <- as.factor(vm_data$give_method)
+
+# Drop old features
+
+drop_cols <- c("SentimentScore"
+               ,"Total Revenue"
+               ,"votes_total")
+
+vm_data <- vm_data %>% select(-one_of(drop_cols))
+
+# Remove NA's in respose
+vm_data <- vm_data %>% filter(!is.na(target))
+
+vm_data2 <- na.roughfix(vm_data)
+
+# Basic GBM for importance
+
+vm_gbm2 <- gbm(target ~.
+              ,data = vm_data2
+              ,distribution = "poisson"
+              ,n.trees = 1000
+              ,interaction.depth = 5
+              ,n.minobsinnode = 15
+              ,shrinkage = 0.001
+              ,bag.fraction = 0.6
+              ,train.fraction = 0.5
+              ,verbose = TRUE)
+
+summary(vm_gbm2)
+
+gbm.perf(vm_gbm2)
+
+
+```
+
+```{r email domain freq4}
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(freq = n()) %>%
+  filter(freq >= 25) %>%
+  ggplot(aes(EmailDomain, freq)) + 
+  geom_bar(stat="identity")
+
+vm_data2 %>% group_by(EmailDomain) %>%
+  summarise(avg_target = mean(target)
+            ,freq = n()) %>%
+  filter(freq >= 5) %>%
+  ggplot(aes(EmailDomain, avg_target)) + 
+  geom_bar(stat="identity")
+
+```
